@@ -530,6 +530,9 @@ size_t dlmalloc_usable_size(const void*);
 */
 typedef void* mspace;
 
+typedef void *(*mmap)(size_t size, void *user_data);
+typedef int (*munmap)(void *p, size_t size, void *user_data);
+
 /*
   create_mspace creates and returns a new independent space with the
   given initial capacity, or, if 0, the default granularity size.  It
@@ -560,7 +563,7 @@ size_t destroy_mspace(mspace msp);
   Destroying this space will deallocate all additionally allocated
   space (if possible) but not the initial base.
 */
-mspace create_mspace_with_base(void* base, size_t capacity, int locked);
+mspace create_mspace_with_base(void* base, size_t capacity, int locked, mmap mmap_ptr, munmap unmap_ptr, void *userdata);
 
 /*
   mspace_track_large_chunks controls whether requests for large chunks

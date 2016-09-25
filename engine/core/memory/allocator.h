@@ -4,6 +4,7 @@
 class Allocator
 {
 public:
+	static const size_t DEFAULT_ALIGNMENT = 4;
 	Allocator(const char *name);
 	virtual ~Allocator() {}
 	

@@ -1301,7 +1301,7 @@ DLMALLOC_EXPORT size_t destroy_mspace(mspace msp);
   Destroying this space will deallocate all additionally allocated
   space (if possible) but not the initial base.
 */
-DLMALLOC_EXPORT mspace create_mspace_with_base(void* base, size_t capacity, int locked);
+DLMALLOC_EXPORT mspace create_mspace_with_base(void* base, size_t capacity, int locked, mmap, munmap, void *userdata);
 
 /*
   mspace_track_large_chunks controls whether requests for large chunks
@@ -1694,9 +1694,17 @@ static FORCEINLINE int win32munmap(void* ptr, size_t size) {
   return 0;
 }
 
-#define MMAP_DEFAULT(s)             win32mmap(s)
-#define MUNMAP_DEFAULT(a, s)        win32munmap((a), (s))
+#define MMAP_DEFAULT(s)             mmap_cb(s)
+#define MUNMAP_DEFAULT(a, s)        munmap_cb((a), (s))
 #define DIRECT_MMAP_DEFAULT(s)      win32direct_mmap(s)
+
+
+//#define MMAP_DEFAULT(s)             win32mmap(s)
+//#define MUNMAP_DEFAULT(a, s)        win32munmap((a), (s))
+//#define DIRECT_MMAP_DEFAULT(s)      win32direct_mmap(s)
+
+
+
 #endif /* WIN32 */
 #endif /* HAVE_MMAP */
 
@@ -1728,17 +1736,17 @@ static FORCEINLINE int win32munmap(void* ptr, size_t size) {
     #ifdef MMAP
         #define CALL_MMAP(s)        MMAP(s)
     #else /* MMAP */
-        #define CALL_MMAP(s)        MMAP_DEFAULT(s)
+        #define CALL_MMAP(m, s)        m->mmap((s), (m->userdata)) // MMAP_DEFAULT(m, s)
     #endif /* MMAP */
     #ifdef MUNMAP
         #define CALL_MUNMAP(a, s)   MUNMAP((a), (s))
     #else /* MUNMAP */
-        #define CALL_MUNMAP(a, s)   MUNMAP_DEFAULT((a), (s))
+        #define CALL_MUNMAP(m, a, s)   m->munmap((a), (s), (m->userdata)) //MUNMAP_DEFAULT((a), (s))
     #endif /* MUNMAP */
     #ifdef DIRECT_MMAP
         #define CALL_DIRECT_MMAP(s) DIRECT_MMAP(s)
     #else /* DIRECT_MMAP */
-        #define CALL_DIRECT_MMAP(s) DIRECT_MMAP_DEFAULT(s)
+        #define CALL_DIRECT_MMAP(s) m->mmap((s), (m->userdata)) //DIRECT_MMAP_DEFAULT(s)
     #endif /* DIRECT_MMAP */
 #else  /* HAVE_MMAP */
     #define USE_MMAP_BIT            (SIZE_T_ZERO)
@@ -2599,6 +2607,11 @@ struct malloc_state {
   msegment   seg;
   void*      extp;      /* Unused but available for extensions */
   size_t     exts;
+  
+  // callbacks
+  mmap mmap;
+  munmap munmap;
+  void *userdata;
 };
 
 typedef struct malloc_state*    mstate;
@@ -4139,7 +4152,7 @@ static void* sys_alloc(mstate m, size_t nb) {
   }
 
   if (HAVE_MMAP && tbase == CMFAIL) {  /* Try MMAP */
-    char* mp = (char*)(CALL_MMAP(asize));
+    char* mp = (char*)(CALL_MMAP(m, asize));
     if (mp != CMFAIL) {
       tbase = mp;
       tsize = asize;
@@ -4266,7 +4279,7 @@ static size_t release_unused_segments(mstate m) {
         else {
           unlink_large_chunk(m, tp);
         }
-        if (CALL_MUNMAP(base, size) == 0) {
+        if (CALL_MUNMAP(m, base, size) == 0) {
           released += size;
           m->footprint -= size;
           /* unlink obsoleted record */
@@ -4311,7 +4324,7 @@ static int sys_trim(mstate m, size_t pad) {
             (void)newsize; /* placate people compiling -Wunused-variable */
             /* Prefer mremap, fall back to munmap */
             if ((CALL_MREMAP(sp->base, sp->size, newsize, 0) != MFAIL) ||
-                (CALL_MUNMAP(sp->base + newsize, extra) == 0)) {
+                (CALL_MUNMAP(m, sp->base + newsize, extra) == 0)) {
               released = extra;
             }
           }
@@ -4364,7 +4377,7 @@ static void dispose_chunk(mstate m, mchunkptr p, size_t psize) {
     size_t prevsize = p->prev_foot;
     if (is_mmapped(p)) {
       psize += prevsize + MMAP_FOOT_PAD;
-      if (CALL_MUNMAP((char*)p - prevsize, psize) == 0)
+      if (CALL_MUNMAP(m, (char*)p - prevsize, psize) == 0)
         m->footprint -= psize;
       return;
     }
@@ -5393,7 +5406,7 @@ size_t dlmalloc_usable_size(void* mem) {
 
 #if MSPACES
 
-static mstate init_user_mstate(char* tbase, size_t tsize) {
+static mstate init_user_mstate(char* tbase, size_t tsize, mmap mmap_ptr, munmap munmap_ptr, void *userdata) {
   size_t msize = pad_request(sizeof(struct malloc_state));
   mchunkptr mn;
   mchunkptr msp = align_as_chunk(tbase);
@@ -5408,6 +5421,9 @@ static mstate init_user_mstate(char* tbase, size_t tsize) {
   m->mflags = mparams.default_mflags;
   m->extp = 0;
   m->exts = 0;
+  m->mmap = mmap_ptr;
+  m->munmap = munmap_ptr;
+  m->userdata = userdata;
   disable_contiguous(m);
   init_bins(m);
   mn = next_chunk(mem2chunk(m));
@@ -5425,9 +5441,9 @@ mspace create_mspace(size_t capacity, int locked) {
     size_t rs = ((capacity == 0)? mparams.granularity :
                  (capacity + TOP_FOOT_SIZE + msize));
     size_t tsize = granularity_align(rs);
-    char* tbase = (char*)(CALL_MMAP(tsize));
+    char* tbase = (char*)(CALL_MMAP(m, tsize));
     if (tbase != CMFAIL) {
-      m = init_user_mstate(tbase, tsize);
+      m = init_user_mstate(tbase, tsize, 0, 0, 0);
       m->seg.sflags = USE_MMAP_BIT;
       set_lock(m, locked);
     }
@@ -5435,14 +5451,15 @@ mspace create_mspace(size_t capacity, int locked) {
   return (mspace)m;
 }
 
-mspace create_mspace_with_base(void* base, size_t capacity, int locked) {
+mspace create_mspace_with_base(void* base, size_t capacity, int locked,	mmap mmap_ptr, munmap munmap_ptr, void *userdata) {
   mstate m = 0;
   size_t msize;
+  
   ensure_initialization();
   msize = pad_request(sizeof(struct malloc_state));
   if (capacity > msize + TOP_FOOT_SIZE &&
       capacity < (size_t) -(msize + TOP_FOOT_SIZE + mparams.page_size)) {
-    m = init_user_mstate((char*)base, capacity);
+    m = init_user_mstate((char*)base, capacity, mmap_ptr, munmap_ptr, userdata);
     m->seg.sflags = EXTERN_BIT;
     set_lock(m, locked);
   }
@@ -5479,7 +5496,7 @@ size_t destroy_mspace(mspace msp) {
       (void)base; /* placate people compiling -Wunused-variable */
       sp = sp->next;
       if ((flag & USE_MMAP_BIT) && !(flag & EXTERN_BIT) &&
-          CALL_MUNMAP(base, size) == 0)
+          CALL_MUNMAP(ms, base, size) == 0)
         freed += size;
     }
   }
@@ -5630,7 +5647,7 @@ void mspace_free(mspace msp, void* mem) {
           size_t prevsize = p->prev_foot;
           if (is_mmapped(p)) {
             psize += prevsize + MMAP_FOOT_PAD;
-            if (CALL_MUNMAP((char*)p - prevsize, psize) == 0)
+            if (CALL_MUNMAP(fm, (char*)p - prevsize, psize) == 0)
               fm->footprint -= psize;
             goto postaction;
           }
