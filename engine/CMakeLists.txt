@@ -26,7 +26,7 @@ add_compile_options($<$<CONFIG:DEBUG>:/Od> $<$<NOT:$<CONFIG:DEBUG>>:/Ox>)
 include_directories(${SOURCE_ROOT})
 
 # platform libraries
-add_subdirectory(${SOURCE_ROOT}/platform/win32)
+add_subdirectory(${SOURCE_ROOT}/platform/windows)
 
 add_subdirectory(${SOURCE_ROOT}/core)
 
